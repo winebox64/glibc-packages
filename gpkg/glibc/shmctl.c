@@ -7,46 +7,31 @@
 int __shmctl64(int shmid, int cmd, struct __shmid64_ds *buf) {
 	ashv_check_pid();
 
-	if (cmd == IPC_RMID) {
-		DBG("%s: IPC_RMID for shmid=%x\n", __PRETTY_FUNCTION__, shmid);
-		pthread_mutex_lock(&mutex);
-		int idx = ashv_find_local_index(shmid);
-		if (idx == -1) {
-			DBG("%s: shmid=%x does not exist locally\n", __PRETTY_FUNCTION__, shmid);
-			/* We do not rm non-local regions, but do not report an error for that. */
-			pthread_mutex_unlock(&mutex);
-			return 0;
-		}
+	pthread_mutex_lock(&mutex);
 
-		if (shmem[idx].addr) {
-			// shmctl(2): The segment will actually be destroyed only
-			// after the last process detaches it (i.e., when the shm_nattch
-			// member of the associated structure shmid_ds is zero.
-			shmem[idx].markedForDeletion = true;
-		} else {
-			android_shmem_delete(idx);
-		}
-		pthread_mutex_unlock(&mutex);
-		return 0;
-	} else if (cmd == IPC_STAT) {
+	INIT_SHMEM(-1)
+
+	switch (cmd) {
+	case IPC_RMID:
+		DBG("%s: IPC_RMID for shmid=%x\n", __PRETTY_FUNCTION__, shmid);
+
+		ashv_delete_segment(idx);
+		if (socket_id != ashv_local_socket_id)
+			ashv_delete_remote_segment(shmid);
+
+		goto ok;
+	case SHM_STAT:
+	case SHM_STAT_ANY:
+	case IPC_STAT:
 		if (!buf) {
 			DBG ("%s: ERROR: buf == NULL for shmid %x\n", __PRETTY_FUNCTION__, shmid);
-			errno = EINVAL;
-			return -1;
+			goto error;
 		}
 
-		pthread_mutex_lock(&mutex);
-		int idx = ashv_find_local_index(shmid);
-		if (idx == -1) {
-			DBG ("%s: ERROR: shmid %x does not exist\n", __PRETTY_FUNCTION__, shmid);
-			pthread_mutex_unlock (&mutex);
-			errno = EINVAL;
-			return -1;
-		}
 		/* Report max permissive mode */
 		memset(buf, 0, sizeof(struct shmid_ds));
 		buf->shm_segsz = shmem[idx].size;
-		buf->shm_nattch = 1;
+		buf->shm_nattch = shmem[idx].countAttach;
 		buf->shm_perm.__key = shmem[idx].key;
 		buf->shm_perm.uid = geteuid();
 		buf->shm_perm.gid = getegid();
@@ -55,11 +40,16 @@ int __shmctl64(int shmid, int cmd, struct __shmid64_ds *buf) {
 		buf->shm_perm.mode = 0666;
 		buf->shm_perm.__seq = 1;
 
-		pthread_mutex_unlock (&mutex);
-		return 0;
+		goto ok;
+	default:
+		DBG("%s: cmd %d not implemented yet!\n", __PRETTY_FUNCTION__, cmd);
+		goto error;
 	}
-
-	DBG("%s: cmd %d not implemented yet!\n", __PRETTY_FUNCTION__, cmd);
+ok:
+	pthread_mutex_unlock (&mutex);
+	return 0;
+error:
+	pthread_mutex_unlock (&mutex);
 	errno = EINVAL;
 	return -1;
 }
